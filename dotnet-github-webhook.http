@@ -1,0 +1,6 @@
+@dotnet_github_webhook_HostAddress = http://localhost:5143
+
+GET {{dotnet_github_webhook_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
