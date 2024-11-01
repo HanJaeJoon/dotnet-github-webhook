@@ -1,8 +1,10 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace dotnet_github_webhook.Controllers;
 
@@ -30,16 +32,24 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
         if (eventType == "push")
         {
             string? compareUrl = null;
+            string? refValue = null;
 
             using (var document = JsonDocument.Parse(payload))
             {
                 var root = document.RootElement;
                 compareUrl = root.GetProperty("compare").GetString();
+                refValue = root.GetProperty("ref").GetString();
             }
 
             if (compareUrl is null)
             {
                 throw new InvalidOperationException();
+            }
+
+            if (refValue?.StartsWith("refs/tags/") == true)
+            {
+                var tagName = refValue.Replace("refs/tags/", "");
+                Console.WriteLine($"Tag pushed: {tagName}");
             }
 
             var apiUrl = compareUrl.Replace("https://github.com/", "https://api.github.com/repos/");
@@ -71,12 +81,16 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                             patch = patchElement.GetString();
                         }
 
-                        Console.WriteLine($"""
-                        File Name: {filename}"
-                        Status: {status}
-                        {(!string.IsNullOrEmpty(patch) ? $"Content:\n{patch}" : "")}
-                        --------------------------------------------------------------
-                        """);
+                        if (string.IsNullOrEmpty(patch)) continue;
+
+                        ParsePatch(patch);
+
+                        //Console.WriteLine($"""
+                        //File Name: {filename}"
+                        //Status: {status}
+                        //{(!string.IsNullOrEmpty(patch) ? $"Content:\n{patch}" : "")}
+                        //--------------------------------------------------------------
+                        //""");
                     }
                 }
             }
@@ -102,5 +116,70 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
         var sb = new StringBuilder(bytes.Length * 2);
         foreach (var b in bytes) sb.AppendFormat("{0:x2}", b);
         return sb.ToString();
+    }
+
+    private static void ParsePatch(string patch)
+    {
+        var patchLines = patch.Split('\n');
+
+        for (int i = 0; i < patchLines.Length; i++)
+        {
+            var line = patchLines[i];
+
+            if (line.StartsWith('-'))
+            {
+                var removedLine = line[1..].Trim();
+
+                if (i + 1 < patchLines.Length && patchLines[i + 1].StartsWith('+'))
+                {
+                    var addedLine = patchLines[i + 1][1..].Trim();
+
+                    if (TryExtractOptionName(removedLine, out var removedOptionName) &&
+                        TryExtractOptionName(addedLine, out var addedOptionName))
+                    {
+                        Console.WriteLine($"The option name has been changed: {removedOptionName} -> {addedOptionName}");
+                        i++;
+                    }
+                    else
+                    {
+                        if (TryExtractOptionName(removedLine, out removedOptionName))
+                        {
+                            Console.WriteLine($"The option has been removed: {removedOptionName}");
+                        }
+                    }
+                }
+                else
+                {
+                    if (TryExtractOptionName(removedLine, out var removedOptionName))
+                    {
+                        Console.WriteLine($"The option has been removed: {removedOptionName}");
+                    }
+                }
+            }
+            else if (line.StartsWith('+'))
+            {
+                var addedLine = line[1..].Trim();
+
+                if (TryExtractOptionName(addedLine, out var addedOptionName))
+                {
+                    Console.WriteLine($"New option added: {addedOptionName}");
+                }
+            }
+        }
+    }
+
+    static bool TryExtractOptionName(string codeLine, [NotNullWhen(true)] out string? optionName)
+    {
+        optionName = null;
+        var pattern = @"public.*?\s+(\w+)\s*\{.*\}";
+        var match = Regex.Match(codeLine, pattern);
+
+        if (match.Success)
+        {
+            optionName = match.Groups[1].Value;
+            return true;
+        }
+
+        return false;
     }
 }
