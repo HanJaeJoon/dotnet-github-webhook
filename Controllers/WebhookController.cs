@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using dotnet_github_webhook.Models;
+using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -10,9 +11,11 @@ namespace dotnet_github_webhook.Controllers;
 
 [ApiController]
 [Route("[controller]")]
-public class WebhookController(IConfiguration configuration) : ControllerBase
+public class WebhookController(IConfiguration configuration, Context context) : ControllerBase
 {
     private readonly string Secret = configuration["Github:WebhookSecret"] ?? throw new InvalidOperationException();
+
+    private static readonly JsonSerializerOptions _serializerOptions = new() { WriteIndented = true };
 
     [HttpPost]
     public async Task<IActionResult> Post()
@@ -33,12 +36,14 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
         {
             string? compareUrl = null;
             string? refValue = null;
+            bool isCreated = false;
 
             using (var document = JsonDocument.Parse(payload))
             {
                 var root = document.RootElement;
                 compareUrl = root.GetProperty("compare").GetString();
                 refValue = root.GetProperty("ref").GetString();
+                isCreated = root.GetProperty("created").GetBoolean();
             }
 
             if (compareUrl is null)
@@ -46,10 +51,16 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                 throw new InvalidOperationException();
             }
 
-            if (refValue?.StartsWith("refs/tags/") == true)
+            if (isCreated && refValue?.StartsWith("refs/tags/") == true)
             {
-                var tagName = refValue.Replace("refs/tags/", "");
-                Console.WriteLine($"Tag pushed: {tagName}");
+                var tag = refValue.Replace("refs/tags/", "");
+                Console.WriteLine($"Tag pushed: {tag}");
+
+                await context.OptionVersions.AddAsync(new OptionVersion()
+                {
+                    Tag = tag,
+                });
+                await context.SaveChangesAsync();
             }
 
             var apiUrl = compareUrl.Replace("https://github.com/", "https://api.github.com/repos/");
@@ -70,9 +81,14 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
 
                 if (root.TryGetProperty("files", out JsonElement filesElement) && filesElement.ValueKind == JsonValueKind.Array)
                 {
+                    var changes = new List<OptionChange>();
+
                     foreach (var fileElement in filesElement.EnumerateArray())
                     {
                         var filename = fileElement.GetProperty("filename").GetString();
+
+                        if (filename is null || !filename.EndsWith("Options.cs")) continue;
+
                         var status = fileElement.GetProperty("status").GetString();
 
                         string? patch = null;
@@ -83,15 +99,13 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
 
                         if (string.IsNullOrEmpty(patch)) continue;
 
-                        ParsePatch(patch);
-
-                        //Console.WriteLine($"""
-                        //File Name: {filename}"
-                        //Status: {status}
-                        //{(!string.IsNullOrEmpty(patch) ? $"Content:\n{patch}" : "")}
-                        //--------------------------------------------------------------
-                        //""");
+                        ParsePatch(filename, patch, ref changes);
                     }
+
+                    await context.OptionChanges.AddRangeAsync(changes);
+                    await context.SaveChangesAsync();
+
+                    //await System.IO.File.WriteAllTextAsync(Path.Combine(outputDirectory, $"{version}.json"), json);
                 }
             }
             else
@@ -118,7 +132,7 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
         return sb.ToString();
     }
 
-    private static void ParsePatch(string patch)
+    private static void ParsePatch(string filename, string patch, ref List<OptionChange> changes)
     {
         var patchLines = patch.Split('\n');
 
@@ -138,6 +152,12 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                         TryExtractOptionName(addedLine, out var addedOptionName))
                     {
                         Console.WriteLine($"The option name has been changed: {removedOptionName} -> {addedOptionName}");
+                        changes.Add(new OptionChange()
+                        {
+                            FileName = filename,
+                            From = removedOptionName,
+                            To = addedOptionName,
+                        });
                         i++;
                     }
                     else
@@ -145,6 +165,11 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                         if (TryExtractOptionName(removedLine, out removedOptionName))
                         {
                             Console.WriteLine($"The option has been removed: {removedOptionName}");
+                            changes.Add(new OptionChange()
+                            {
+                                FileName = filename,
+                                From = removedOptionName,
+                            });
                         }
                     }
                 }
@@ -153,6 +178,11 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                     if (TryExtractOptionName(removedLine, out var removedOptionName))
                     {
                         Console.WriteLine($"The option has been removed: {removedOptionName}");
+                        changes.Add(new OptionChange()
+                        {
+                            FileName = filename,
+                            From = removedOptionName,
+                        });
                     }
                 }
             }
@@ -163,6 +193,11 @@ public class WebhookController(IConfiguration configuration) : ControllerBase
                 if (TryExtractOptionName(addedLine, out var addedOptionName))
                 {
                     Console.WriteLine($"New option added: {addedOptionName}");
+                    changes.Add(new OptionChange()
+                    {
+                        FileName = filename,
+                        To = addedOptionName,
+                    });
                 }
             }
         }
