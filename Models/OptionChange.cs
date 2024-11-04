@@ -15,11 +15,13 @@ public class OptionChange
     [MaxLength(64)]
     public string? FileName { get; set; }
 
+    [Column("Version", TypeName = "VARCHAR2")]
+    [MaxLength(64)]
+    public string? Version { get; set; }
 
     [Column("From", TypeName = "VARCHAR2")]
     [MaxLength(64)]
     public string? From { get; set; }
-
 
     [Column("To", TypeName = "VARCHAR2")]
     [MaxLength(64)]

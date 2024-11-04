@@ -15,8 +15,6 @@ public class WebhookController(IConfiguration configuration, Context context) : 
 {
     private readonly string Secret = configuration["Github:WebhookSecret"] ?? throw new InvalidOperationException();
 
-    private static readonly JsonSerializerOptions _serializerOptions = new() { WriteIndented = true };
-
     [HttpPost]
     public async Task<IActionResult> Post()
     {
@@ -78,6 +76,7 @@ public class WebhookController(IConfiguration configuration, Context context) : 
 
                 using var document = JsonDocument.Parse(responseContent);
                 var root = document.RootElement;
+                var version = context.OptionVersions.OrderByDescending(x => x.Id).FirstOrDefault()?.Tag ?? "base";
 
                 if (root.TryGetProperty("files", out JsonElement filesElement) && filesElement.ValueKind == JsonValueKind.Array)
                 {
@@ -99,13 +98,11 @@ public class WebhookController(IConfiguration configuration, Context context) : 
 
                         if (string.IsNullOrEmpty(patch)) continue;
 
-                        ParsePatch(filename, patch, ref changes);
+                        ParsePatch(version, filename, patch, ref changes);
                     }
 
                     await context.OptionChanges.AddRangeAsync(changes);
                     await context.SaveChangesAsync();
-
-                    //await System.IO.File.WriteAllTextAsync(Path.Combine(outputDirectory, $"{version}.json"), json);
                 }
             }
             else
@@ -132,7 +129,7 @@ public class WebhookController(IConfiguration configuration, Context context) : 
         return sb.ToString();
     }
 
-    private static void ParsePatch(string filename, string patch, ref List<OptionChange> changes)
+    private static void ParsePatch(string version, string filename, string patch, ref List<OptionChange> changes)
     {
         var patchLines = patch.Split('\n');
 
@@ -154,6 +151,7 @@ public class WebhookController(IConfiguration configuration, Context context) : 
                         Console.WriteLine($"The option name has been changed: {removedOptionName} -> {addedOptionName}");
                         changes.Add(new OptionChange()
                         {
+                            Version = version,
                             FileName = filename,
                             From = removedOptionName,
                             To = addedOptionName,
@@ -167,6 +165,7 @@ public class WebhookController(IConfiguration configuration, Context context) : 
                             Console.WriteLine($"The option has been removed: {removedOptionName}");
                             changes.Add(new OptionChange()
                             {
+                                Version = version,
                                 FileName = filename,
                                 From = removedOptionName,
                             });
@@ -180,6 +179,7 @@ public class WebhookController(IConfiguration configuration, Context context) : 
                         Console.WriteLine($"The option has been removed: {removedOptionName}");
                         changes.Add(new OptionChange()
                         {
+                            Version = version,
                             FileName = filename,
                             From = removedOptionName,
                         });
@@ -195,12 +195,21 @@ public class WebhookController(IConfiguration configuration, Context context) : 
                     Console.WriteLine($"New option added: {addedOptionName}");
                     changes.Add(new OptionChange()
                     {
+                        Version = version,
                         FileName = filename,
                         To = addedOptionName,
                     });
                 }
             }
         }
+
+        var ChangesArray = changes.ToArray();
+        changes.RemoveAll(change =>
+            ChangesArray.Any(c =>
+                (c.From is not null && c.To is null && change.From is null && change.To is not null && c.From == change.To) ||
+                (c.From is null && c.To is not null && change.From is not null && change.To is null && c.To == change.From)
+            )
+        );
     }
 
     static bool TryExtractOptionName(string codeLine, [NotNullWhen(true)] out string? optionName)
